@@ -1,76 +1,80 @@
 import streamlit as st
 import yfinance as yf
-import pandas_ta as ta
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 
-# Page Configuration
-st.set_page_config(page_title="Smart Stock Screener", layout="wide")
+# --- Header ---
+st.set_page_config(page_title="Pro Stock Screener", layout="wide")
+st.subheader("🚀 Advanced Trading Terminal (EMA + RSI)")
 
-st.title("📈 Advanced Trading Terminal")
-st.markdown("EMA Crossover & RSI Analysis (Nifty Stocks)")
-
-# ടിക്കറുകൾ (നിങ്ങൾക്ക് ഇഷ്ടമുള്ളവ ഇവിടെ ആഡ് ചെയ്യാം)
-tickers = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "TATAMOTORS", "SBIN", "BHARTIARTL"]
+# Tickers List
+tickers = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "TATAMOTORS", "SBI", "BHARTIARTL"]
 formatted_tickers = [t + ".NS" for t in tickers]
 
 if st.button("🔍 സ്കാൻ വിപണി (Scan Market)"):
     with st.spinner('ഡാറ്റ വിശകലനം ചെയ്യുന്നു...'):
         try:
-            # ഡാറ്റ ഡൗൺലോഡ് ചെയ്യുന്നു (Group by Ticker for better handling)
+            # Download Data
             all_data = yf.download(formatted_tickers, period="1y", interval="1d", group_by='ticker', progress=False)
+            
+            trend_results = []
             
             for ticker in tickers:
                 ticker_ns = ticker + ".NS"
-                df = all_data[ticker_ns].copy().dropna()
-                
-                if len(df) > 50:
-                    # Indicators കണക്കാക്കുന്നു
-                    df['EMA20'] = ta.ema(df['Close'], length=20)
-                    df['EMA50'] = ta.ema(df['Close'], length=50)
-                    df['RSI'] = ta.rsi(df['Close'], length=14)
+                if ticker_ns in all_data:
+                    prices = all_data[ticker_ns]['Close'].dropna()
                     
-                    curr = df.iloc[-1]
-                    prev = df.iloc[-2]
-                    
-                    # സിഗ്നൽ ലോജിക്
-                    is_golden = (prev['EMA20'] <= prev['EMA50']) and (curr['EMA20'] > curr['EMA50'])
-                    is_death = (prev['EMA20'] >= prev['EMA50']) and (curr['EMA20'] < curr['EMA50'])
-                    
-                    if is_golden:
-                        status, color = "🔥 GOLDEN CROSS (BUY)", "#ffff00"
-                    elif is_death:
-                        status, color = "💀 DEATH CROSS (SELL)", "#ff4b4b"
-                    elif curr['EMA20'] > curr['EMA50']:
-                        status, color = "Bullish 📈", "#00ff00"
-                    else:
-                        status, color = "Bearish 📉", "#ff4b4b"
-
-                    # --- ഡിസ്പ്ലേ സെക്ഷൻ ---
-                    with st.expander(f"{ticker} - {status} (Price: ₹{round(curr['Close'], 2)})"):
-                        col1, col2 = st.columns([1, 3])
+                    if len(prices) > 50:
+                        # EMA Calculation (Manual)
+                        ema20 = prices.ewm(span=20, adjust=False).mean()
+                        ema50 = prices.ewm(span=50, adjust=False).mean()
                         
-                        with col1:
-                            st.metric("Price", f"₹{round(curr['Close'], 2)}")
-                            st.metric("RSI", round(curr['RSI'], 2))
-                            if curr['RSI'] > 70: st.warning("Overbought ⚠️")
-                            if curr['RSI'] < 30: st.info("Oversold 💎")
+                        # RSI Calculation (Manual)
+                        delta = prices.diff()
+                        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+                        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+                        rs = gain / loss
+                        rsi = 100 - (100 / (1 + rs))
+                        
+                        curr_ema20, prev_ema20 = ema20.iloc[-1], ema20.iloc[-2]
+                        curr_ema50, prev_ema50 = ema50.iloc[-1], ema50.iloc[-2]
+                        curr_rsi = rsi.iloc[-1]
+                        curr_price = prices.iloc[-1]
+                        
+                        # Signal Logic
+                        is_golden_cross = (prev_ema20 <= prev_ema50) and (curr_ema20 > curr_ema50)
+                        is_death_cross = (prev_ema20 >= prev_ema50) and (curr_ema20 < curr_ema50)
+                        
+                        if is_golden_cross:
+                            status, color = "🔥 GOLDEN CROSS", "#ffff00"
+                        elif is_death_cross:
+                            status, color = "💀 DEATH CROSS", "#ff4b4b"
+                        elif curr_ema20 > curr_ema50:
+                            status, color = "Bullish 📈", "#00ff00"
+                        else:
+                            status, color = "Bearish 📉", "#ff4b4b"
 
-                        with col2:
-                            # Plotly Candlestick Chart
-                            fig = go.Figure()
-                            fig.add_trace(go.Candlestick(x=df.index[-60:], open=df['Open'], high=df['High'], 
-                                                        low=df['Low'], close=df['Close'], name='Price'))
-                            fig.add_trace(go.Scatter(x=df.index[-60:], y=df['EMA20'][-60:], name='EMA 20', line=dict(color='blue')))
-                            fig.add_trace(go.Scatter(x=df.index[-60:], y=df['EMA50'][-60:], name='EMA 50', line=dict(color='orange')))
-                            
-                            fig.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0), showlegend=False)
-                            st.plotly_chart(fig, use_container_width=True)
-
-            st.success("സ്കാനിംഗ് വിജയകരമായി പൂർത്തിയായി!")
+                        trend_results.append({
+                            "Stock": ticker, "Price": round(curr_price, 2),
+                            "RSI": round(curr_rsi, 2), "Signal": status, "color": color
+                        })
+            
+            # Visual Cards
+            if trend_results:
+                cols = st.columns(3)
+                for idx, res in enumerate(trend_results):
+                    with cols[idx % 3]:
+                        st.markdown(f"""
+                            <div style="background-color:#1e2130; padding:15px; border-radius:10px; border-left: 5px solid {res['color']}; margin-bottom:10px;">
+                                <h4 style="margin:0; color:white;">{res['Stock']}</h4>
+                                <p style="margin:0; color:#b0b0b0;">Price: <b>₹{res['Price']}</b></p>
+                                <p style="margin:5px 0; color:{res['color']}; font-weight:bold;">{res['Signal']}</p>
+                                <p style="margin:0; color:#888; font-size:12px;">RSI: {res['RSI']}</p>
+                            </div>
+                        """, unsafe_allow_code=True)
+                st.success("സ്കാനിംഗ് വിജയകരമായി പൂർത്തിയായി!")
             
         except Exception as e:
             st.error(f"Error: {e}")
 
-st.info("💡 Tip: Golden Cross വന്നാൽ RSI 50-70 റേഞ്ചിലാണോ എന്ന് നോക്കുന്നത് കൂടുതൽ സുരക്ഷിതമാണ്.")
+st.info("💡 സൂചന: Golden Cross വന്നാൽ വാങ്ങുന്നതിന് മുൻപ് RSI 70-ന് താഴെയാണോ എന്ന് ഉറപ്പുവരുത്തുക.")
