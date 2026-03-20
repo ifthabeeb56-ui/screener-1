@@ -1,80 +1,95 @@
 import streamlit as st
-import yfinance as yf
 import pandas as pd
-import plotly.graph_objects as go
+import pandas_ta as ta
+import yfinance as yf
+from streamlit_autorefresh import st_autorefresh
 
-# --- Header ---
-st.set_page_config(page_title="Pro Stock Screener", layout="wide")
-st.subheader("🚀 Advanced Trading Terminal (EMA + RSI)")
+st.set_page_config(page_title="Nifty 500 Power Screener", layout="wide")
 
-# Tickers List
-tickers = ["RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "TATAMOTORS", "SBI", "BHARTIARTL"]
-formatted_tickers = [t + ".NS" for t in tickers]
+# ഓട്ടോ റിഫ്രഷ് (ഓരോ 10 മിനിറ്റിലും)
+st_autorefresh(interval=10 * 60 * 1000, key="nifty500refresh")
 
-if st.button("🔍 സ്കാൻ വിപണി (Scan Market)"):
-    with st.spinner('ഡാറ്റ വിശകലനം ചെയ്യുന്നു...'):
-        try:
-            # Download Data
-            all_data = yf.download(formatted_tickers, period="1y", interval="1d", group_by='ticker', progress=False)
+@st.cache_data
+def get_nifty500_symbols():
+    try:
+        # Nifty 500 ലിസ്റ്റ് GitHub-ൽ നിന്ന് നേരിട്ട് എടുക്കുന്നു
+        url = "https://raw.githubusercontent.com/anirban-santra/Nifty-Indices-Stock-List/master/Nifty%20500.csv"
+        df = pd.read_csv(url)
+        # yfinance-ന് വേണ്ടി .NS ചേർക്കുന്നു
+        symbols = [str(s) + ".NS" for s in df['Symbol'].tolist()]
+        return symbols
+    except:
+        # ലിങ്ക് വർക്ക് ചെയ്യുന്നില്ലെങ്കിൽ മാത്രം ഉപയോഗിക്കാൻ ബാക്കപ്പ്
+        return ["RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS"]
+
+def run_power_screener():
+    st.title("🚀 Nifty 500 Advanced Trading Terminal")
+    
+    # ഫോട്ടോയിലെ എറർ വരാതിരിക്കാൻ unsafe_allow_html ആണ് ഉപയോഗിക്കേണ്ടത്
+    st.markdown("### കണ്ടീഷൻ: **EMA 20 > 50** & **RSI 40-65**")
+    
+    symbols = get_nifty500_symbols()
+    
+    # സ്കാൻ ബട്ടൺ
+    if st.button("🔍 സ്കാൻ വിപണി (Scan Market)"):
+        buy_signals = []
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # തുടക്കത്തിൽ ആദ്യത്തെ 100 എണ്ണം സ്കാൻ ചെയ്യാൻ വെക്കുന്നു (വേഗതയ്ക്ക് വേണ്ടി)
+        # മുഴുവൻ വേണമെങ്കിൽ symbols[:100] എന്നത് symbols എന്ന് മാത്രമാക്കുക
+        target_stocks = symbols[:100] 
+
+        for i, symbol in enumerate(target_stocks):
+            try:
+                status_text.text(f"പരിശോധിക്കുന്നു ({i+1}/{len(target_stocks)}): {symbol}")
+                progress_bar.progress((i + 1) / len(target_stocks))
+                
+                df = yf.download(symbol, period='6mo', interval='1d', progress=False)
+                
+                if len(df) < 50: continue
+
+                # കോളം നെയിം ക്ലീൻ ചെയ്യുന്നു
+                if isinstance(df.columns, pd.MultiIndex):
+                    df.columns = df.columns.get_level_values(0)
+
+                df['EMA20'] = ta.ema(df['Close'], length=20)
+                df['EMA50'] = ta.ema(df['Close'], length=50)
+                df['RSI'] = ta.rsi(df['Close'], length=14)
+                
+                last_row = df.iloc[-1]
+                
+                # വാല്യൂസ് എടുക്കുന്നു
+                close_p = float(last_row['Close'])
+                ema20 = float(last_row['EMA20'])
+                ema50 = float(last_row['EMA50'])
+                rsi_v = float(last_row['RSI'])
+
+                if ema20 > ema50 and 40 < rsi_v < 65:
+                    clean_name = symbol.replace(".NS", "")
+                    buy_signals.append({
+                        "Stock": clean_name,
+                        "Price": round(close_p, 2),
+                        "RSI": round(rsi_v, 2),
+                        "Chart": f"https://www.tradingview.com/chart/?symbol=NSE:{clean_name}"
+                    })
+            except:
+                continue
+
+        status_text.empty()
+        progress_bar.empty()
+
+        if buy_signals:
+            st.success(f"✅ {len(buy_signals)} ബൈ സിഗ്നലുകൾ കണ്ടെത്തി!")
+            res_df = pd.DataFrame(buy_signals)
             
-            trend_results = []
+            # TradingView ലിങ്ക് ക്ലിക്കബിൾ ആക്കുന്നു
+            res_df['Chart'] = res_df['Chart'].apply(lambda x: f'<a href="{x}" target="_blank">View 📈</a>')
             
-            for ticker in tickers:
-                ticker_ns = ticker + ".NS"
-                if ticker_ns in all_data:
-                    prices = all_data[ticker_ns]['Close'].dropna()
-                    
-                    if len(prices) > 50:
-                        # EMA Calculation (Manual)
-                        ema20 = prices.ewm(span=20, adjust=False).mean()
-                        ema50 = prices.ewm(span=50, adjust=False).mean()
-                        
-                        # RSI Calculation (Manual)
-                        delta = prices.diff()
-                        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
-                        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-                        rs = gain / loss
-                        rsi = 100 - (100 / (1 + rs))
-                        
-                        curr_ema20, prev_ema20 = ema20.iloc[-1], ema20.iloc[-2]
-                        curr_ema50, prev_ema50 = ema50.iloc[-1], ema50.iloc[-2]
-                        curr_rsi = rsi.iloc[-1]
-                        curr_price = prices.iloc[-1]
-                        
-                        # Signal Logic
-                        is_golden_cross = (prev_ema20 <= prev_ema50) and (curr_ema20 > curr_ema50)
-                        is_death_cross = (prev_ema20 >= prev_ema50) and (curr_ema20 < curr_ema50)
-                        
-                        if is_golden_cross:
-                            status, color = "🔥 GOLDEN CROSS", "#ffff00"
-                        elif is_death_cross:
-                            status, color = "💀 DEATH CROSS", "#ff4b4b"
-                        elif curr_ema20 > curr_ema50:
-                            status, color = "Bullish 📈", "#00ff00"
-                        else:
-                            status, color = "Bearish 📉", "#ff4b4b"
+            # ഡിസ്പ്ലേ
+            st.write(res_df.to_html(escape=False, index=False), unsafe_allow_html=True)
+        else:
+            st.warning("നിലവിൽ നിബന്ധനകൾ പാലിക്കുന്ന സ്റ്റോക്കുകൾ ഇല്ല.")
 
-                        trend_results.append({
-                            "Stock": ticker, "Price": round(curr_price, 2),
-                            "RSI": round(curr_rsi, 2), "Signal": status, "color": color
-                        })
-            
-            # Visual Cards
-            if trend_results:
-                cols = st.columns(3)
-                for idx, res in enumerate(trend_results):
-                    with cols[idx % 3]:
-                        st.markdown(f"""
-                            <div style="background-color:#1e2130; padding:15px; border-radius:10px; border-left: 5px solid {res['color']}; margin-bottom:10px;">
-                                <h4 style="margin:0; color:white;">{res['Stock']}</h4>
-                                <p style="margin:0; color:#b0b0b0;">Price: <b>₹{res['Price']}</b></p>
-                                <p style="margin:5px 0; color:{res['color']}; font-weight:bold;">{res['Signal']}</p>
-                                <p style="margin:0; color:#888; font-size:12px;">RSI: {res['RSI']}</p>
-                            </div>
-                        """, unsafe_allow_code=True)
-                st.success("സ്കാനിംഗ് വിജയകരമായി പൂർത്തിയായി!")
-            
-        except Exception as e:
-            st.error(f"Error: {e}")
-
-st.info("💡 സൂചന: Golden Cross വന്നാൽ വാങ്ങുന്നതിന് മുൻപ് RSI 70-ന് താഴെയാണോ എന്ന് ഉറപ്പുവരുത്തുക.")
+if __name__ == "__main__":
+    run_power_screener()
